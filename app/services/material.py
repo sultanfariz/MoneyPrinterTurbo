@@ -10,6 +10,7 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from app.config import config
 from app.models.schema import MaterialInfo, VideoAspect, VideoConcatMode
 from app.utils import utils
+from app.services import replicate
 
 requested_count = 0
 
@@ -144,6 +145,72 @@ def search_videos_pixabay(
     return []
 
 
+def generate_videos_replicate(
+    search_term: str,
+    video_duration: int = 10,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+) -> List[MaterialInfo]:
+    """
+    Generate videos using Replicate API instead of searching for stock footage
+
+    Args:
+        search_term: Prompt for video generation
+        video_duration: Duration of the video (5 or 10 seconds)
+        video_aspect: Aspect ratio for the video
+
+    Returns:
+        List of MaterialInfo with generated video URLs
+    """
+    aspect = VideoAspect(video_aspect)
+
+    # Get default image URL from config or use a placeholder
+    default_image_url = config.replicate.get("default_image_url", "")
+
+    if not default_image_url:
+        # Use a solid color image as default (1x1 transparent PNG data URI)
+        # This is a minimal placeholder - you may want to configure a proper image
+        default_image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        logger.warning("No default_image_url configured for Replicate, using placeholder")
+
+    # Map aspect ratio to Replicate format
+    aspect_ratio_map = {
+        VideoAspect.portrait: "9:16",
+        VideoAspect.landscape: "16:9",
+        VideoAspect.square: "1:1",
+    }
+    replicate_aspect_ratio = aspect_ratio_map.get(aspect, "9:16")
+
+    # Generate video using Replicate
+    try:
+        logger.info(f"Generating video for prompt: '{search_term}' with duration {video_duration}s")
+
+        video_url = replicate.generate_video_and_wait(
+            prompt=search_term,
+            image_url=default_image_url,
+            duration=video_duration,
+            resolution="720p",
+            aspect_ratio=replicate_aspect_ratio,
+            camera_fixed=False,
+            max_wait_time=600,  # 10 minutes max
+            poll_interval=5
+        )
+
+        if video_url:
+            item = MaterialInfo()
+            item.provider = "replicate"
+            item.url = video_url
+            item.duration = video_duration
+            logger.success(f"Video generated successfully: {video_url}")
+            return [item]
+        else:
+            logger.error("Video generation failed - no URL returned")
+            return []
+
+    except Exception as e:
+        logger.error(f"Failed to generate video with Replicate: {str(e)}")
+        return []
+
+
 def save_video(video_url: str, save_dir: str = "") -> str:
     if not save_dir:
         save_dir = utils.storage_dir("cache_videos")
@@ -206,23 +273,50 @@ def download_videos(
     valid_video_items = []
     valid_video_urls = []
     found_duration = 0.0
-    search_videos = search_videos_pexels
-    if source == "pixabay":
-        search_videos = search_videos_pixabay
 
-    for search_term in search_terms:
-        video_items = search_videos(
-            search_term=search_term,
-            minimum_duration=max_clip_duration,
-            video_aspect=video_aspect,
-        )
-        logger.info(f"found {len(video_items)} videos for '{search_term}'")
+    # Select appropriate search/generation function based on source
+    if source == "replicate":
+        # For Replicate, we generate videos instead of searching
+        # Duration must be 5 or 10 seconds
+        video_duration = 10 if max_clip_duration > 5 else 5
 
-        for item in video_items:
-            if item.url not in valid_video_urls:
-                valid_video_items.append(item)
-                valid_video_urls.append(item.url)
-                found_duration += item.duration
+        for search_term in search_terms:
+            video_items = generate_videos_replicate(
+                search_term=search_term,
+                video_duration=video_duration,
+                video_aspect=video_aspect,
+            )
+            logger.info(f"generated {len(video_items)} videos for '{search_term}'")
+
+            for item in video_items:
+                if item.url not in valid_video_urls:
+                    valid_video_items.append(item)
+                    valid_video_urls.append(item.url)
+                    found_duration += item.duration
+
+            # For Replicate, check if we have enough duration and stop generating more
+            if found_duration >= audio_duration:
+                logger.info(f"Generated sufficient video duration ({found_duration}s >= {audio_duration}s), stopping generation")
+                break
+    else:
+        # Original logic for Pexels/Pixabay
+        search_videos = search_videos_pexels
+        if source == "pixabay":
+            search_videos = search_videos_pixabay
+
+        for search_term in search_terms:
+            video_items = search_videos(
+                search_term=search_term,
+                minimum_duration=max_clip_duration,
+                video_aspect=video_aspect,
+            )
+            logger.info(f"found {len(video_items)} videos for '{search_term}'")
+
+            for item in video_items:
+                if item.url not in valid_video_urls:
+                    valid_video_items.append(item)
+                    valid_video_urls.append(item.url)
+                    found_duration += item.duration
 
     logger.info(
         f"found total videos: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"

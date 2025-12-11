@@ -184,15 +184,14 @@ def generate_videos_replicate(
     try:
         logger.info(f"Generating video for prompt: '{search_term}' with duration {video_duration}s")
 
-        video_url = replicate.generate_video_and_wait(
+        video_url = replicate.generate_video_with_webhook(
             prompt=search_term,
             image_url=default_image_url,
             duration=video_duration,
             resolution="720p",
             aspect_ratio=replicate_aspect_ratio,
             camera_fixed=False,
-            max_wait_time=600,  # 10 minutes max
-            poll_interval=5
+            max_wait_time=600  # 10 minutes max
         )
 
         if video_url:

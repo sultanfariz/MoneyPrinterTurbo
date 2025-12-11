@@ -4,7 +4,7 @@ Replicate API controller for video generation and webhook handling
 import hashlib
 import hmac
 from typing import Dict, Any
-from fastapi import Request, Header, HTTPException
+from fastapi import Request, Header, HTTPException, Path
 from loguru import logger
 
 from app.config import config
@@ -17,6 +17,7 @@ from app.models.replicate_schema import (
 )
 from app.models.schema import BaseResponse
 from app.services import replicate as replicate_service
+from app.services.webhook_manager import webhook_result_manager
 
 # Create router
 router = new_router()
@@ -120,9 +121,10 @@ def get_prediction_status(body: ReplicatePredictionStatusRequest):
         raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
 
 
-@router.post("/replicate/webhook", summary="Webhook endpoint for Replicate completion notifications")
+@router.post("/replicate/webhook/{callback_id}", summary="Webhook endpoint for Replicate completion notifications")
 async def replicate_webhook(
-    request: Request,
+    callback_id: str = Path(..., description="Unique callback identifier"),
+    request: Request = None,
     webhook_id: str = Header(None, alias="webhook-id"),
     webhook_timestamp: str = Header(None, alias="webhook-timestamp"),
     webhook_signature: str = Header(None, alias="webhook-signature"),
@@ -131,9 +133,10 @@ async def replicate_webhook(
     Webhook endpoint to receive Replicate prediction completion notifications
 
     This endpoint receives POST requests from Replicate when a prediction completes.
-    It validates the webhook signature and processes the completion event.
+    It stores the result so the waiting video generation process can continue.
 
     Args:
+        callback_id: Unique callback identifier from URL path
         request: FastAPI request object
         webhook_id: Webhook event ID from headers
         webhook_timestamp: Webhook timestamp from headers
@@ -149,7 +152,7 @@ async def replicate_webhook(
         # Parse request body
         body = await request.json()
 
-        logger.info(f"Received webhook from Replicate")
+        logger.info(f"Received webhook from Replicate for callback_id: {callback_id}")
         logger.debug(f"Webhook ID: {webhook_id}")
         logger.debug(f"Webhook Timestamp: {webhook_timestamp}")
         logger.debug(f"Webhook Signature: {webhook_signature}")
@@ -167,45 +170,46 @@ async def replicate_webhook(
         logger.info(f"Status: {webhook_request.status}")
         logger.info(f"Model: {webhook_request.model}")
 
+        # Store the result for the waiting process
+        result_data = {
+            "id": webhook_request.id,
+            "status": webhook_request.status,
+            "output": webhook_request.output,
+            "error": webhook_request.error,
+            "logs": webhook_request.logs,
+            "created_at": webhook_request.created_at,
+        }
+        webhook_result_manager.set_result(callback_id, result_data)
+
         if webhook_request.status == "succeeded":
-            logger.info(f"Video generation succeeded!")
+            logger.success(f"Video generation succeeded for callback_id: {callback_id}")
             logger.info(f"Output: {webhook_request.output}")
 
-            # Here you can add custom logic to handle the completed video
-            # For example:
-            # - Download the video to local storage
-            # - Update database records
-            # - Trigger downstream processing
-            # - Send notifications
-
         elif webhook_request.status == "failed":
-            logger.error(f"Video generation failed!")
+            logger.error(f"Video generation failed for callback_id: {callback_id}")
             logger.error(f"Error: {webhook_request.error}")
 
-            # Handle failure
-            # - Update error status in database
-            # - Send failure notifications
-            # - Trigger retry logic if applicable
-
         elif webhook_request.status == "canceled":
-            logger.warning(f"Video generation was canceled")
+            logger.warning(f"Video generation was canceled for callback_id: {callback_id}")
 
         else:
-            logger.info(f"Prediction in status: {webhook_request.status}")
+            logger.info(f"Prediction in status: {webhook_request.status} for callback_id: {callback_id}")
 
         return {
             "status": "received",
+            "callback_id": callback_id,
             "prediction_id": webhook_request.id,
             "webhook_id": webhook_id,
-            "message": "Webhook processed successfully"
+            "message": "Webhook processed and result stored successfully"
         }
 
     except Exception as e:
-        logger.error(f"Webhook processing failed: {str(e)}")
+        logger.error(f"Webhook processing failed for callback_id {callback_id}: {str(e)}")
         # Return 200 to prevent Replicate from retrying
         # You might want to change this behavior based on your needs
         return {
             "status": "error",
+            "callback_id": callback_id,
             "message": str(e)
         }
 

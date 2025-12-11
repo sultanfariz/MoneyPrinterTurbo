@@ -216,6 +216,17 @@ speech_region = ""
 # Get your API key at https://siliconflow.cn
 api_key = ""
 
+[replicate]
+# Replicate API Key
+# Get your API key at https://replicate.com/account/api-tokens
+api_key = ""
+# Default model for video generation
+model = "bytedance/seedance-1-pro"
+# Webhook base URL (if you want to receive completion notifications)
+# This should be your publicly accessible endpoint (e.g., via ngrok or production domain)
+# Example: "https://your-domain.com" or "https://xxxx.ngrok-free.app"
+webhook_base_url = ""
+
 [ui]
 # UI related settings
 # 是否隐藏日志信息

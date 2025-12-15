@@ -58,6 +58,59 @@ def generate_terms(task_id, params, video_script):
     return video_terms
 
 
+def calculate_and_generate_video_prompts(task_id, params, video_script):
+    """
+    Calculate the number of videos needed and generate optimized prompts for each.
+
+    This function:
+    1. Analyzes the script and calculates how many videos are needed
+    2. Breaks down the script into segments
+    3. Generates a detailed cinematic prompt for each video segment
+
+    Uses the heuristic: 1-3 sentences = 1 video (3-5 seconds)
+
+    Args:
+        task_id: The task ID for logging and state management
+        params: The video parameters
+        video_script: The generated video script
+
+    Returns:
+        A list of optimized prompt strings for Replicate, or None if generation fails
+    """
+    logger.info("\n\n## calculating video count and generating prompts for Replicate")
+
+    try:
+        # Step 1: Calculate how many videos we need
+        video_count = llm.calculate_video_count(video_script)
+        logger.info(f"Script analysis: need {video_count} video(s)")
+
+        if video_count < 1:
+            video_count = 1
+
+        # Step 2: Generate optimized prompts for each video segment
+        video_prompts = llm.generate_multiple_video_prompts(
+            video_subject=params.video_subject,
+            video_script=video_script,
+            video_count=video_count
+        )
+
+        if not video_prompts or len(video_prompts) == 0:
+            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+            logger.error("Failed to generate video prompts")
+            return None
+
+        logger.success(f"Generated {len(video_prompts)} optimized video prompts")
+        for i, prompt in enumerate(video_prompts, 1):
+            logger.debug(f"Prompt {i}: {prompt[:100]}...")
+
+        return video_prompts
+
+    except Exception as e:
+        logger.error(f"Exception while calculating video count and generating prompts: {str(e)}")
+        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+        return None
+
+
 def save_script_data(task_id, video_script, video_terms, params):
     script_file = path.join(utils.task_dir(task_id), "script.json")
     script_data = {
@@ -159,7 +212,10 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
     return subtitle_path
 
 
-def get_video_materials(task_id, params, video_terms, audio_duration):
+def get_video_materials(task_id, params, video_terms, audio_duration, video_prompts_list=None):
+    if video_prompts_list is None:
+        video_prompts_list = []
+
     if params.video_source == "local":
         logger.info("\n\n## preprocess local materials")
         materials = video.preprocess_video(
@@ -182,6 +238,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             video_contact_mode=params.video_concat_mode,
             audio_duration=audio_duration * params.video_count,
             max_clip_duration=params.video_clip_duration,
+            video_prompts=video_prompts_list,
         )
         if not downloaded_videos:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -245,6 +302,7 @@ def generate_final_videos(
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
+    logger.info(f"Video settings - Aspect ratio: {params.video_aspect}, Source: {params.video_source}, Count: {params.video_count}")
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
 
     if type(params.video_concat_mode) is str:
@@ -282,7 +340,17 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=20)
 
-    # 3. Generate audio
+    # 3. Calculate video count and generate prompts for Replicate (if needed)
+    video_prompts_list = []
+    if params.video_source == "replicate":
+        video_prompts_list = calculate_and_generate_video_prompts(task_id, params, video_script)
+        if not video_prompts_list:
+            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+            return
+
+    sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=25)
+
+    # 4. Generate audio
     audio_file, audio_duration, sub_maker = generate_audio(
         task_id, params, video_script
     )
@@ -301,7 +369,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         )
         return {"audio_file": audio_file, "audio_duration": audio_duration}
 
-    # 4. Generate subtitle
+    # 5. Generate subtitle
     subtitle_path = generate_subtitle(
         task_id, params, video_script, sub_maker, audio_file
     )
@@ -317,9 +385,9 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
 
-    # 5. Get video materials
+    # 6. Get video materials
     downloaded_videos = get_video_materials(
-        task_id, params, video_terms, audio_duration
+        task_id, params, video_terms, audio_duration, video_prompts_list
     )
     if not downloaded_videos:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -336,7 +404,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=50)
 
-    # 6. Generate final videos
+    # 7. Generate final videos
     final_video_paths, combined_video_paths = generate_final_videos(
         task_id, params, downloaded_videos, audio_file, subtitle_path
     )

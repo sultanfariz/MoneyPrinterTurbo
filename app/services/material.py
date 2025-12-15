@@ -9,8 +9,8 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 
 from app.config import config
 from app.models.schema import MaterialInfo, VideoAspect, VideoConcatMode
-from app.utils import utils
 from app.services import replicate
+from app.utils import utils
 
 requested_count = 0
 
@@ -146,15 +146,15 @@ def search_videos_pixabay(
 
 
 def generate_videos_replicate(
-    search_term: str,
+    prompt: str,
     video_duration: int = 10,
     video_aspect: VideoAspect = VideoAspect.portrait,
 ) -> List[MaterialInfo]:
     """
-    Generate videos using Replicate API instead of searching for stock footage
+    Generate a single video using Replicate API with the provided prompt
 
     Args:
-        search_term: Prompt for video generation
+        prompt: Cinematic prompt for video generation (from LLM)
         video_duration: Duration of the video (5 or 10 seconds)
         video_aspect: Aspect ratio for the video
 
@@ -163,14 +163,13 @@ def generate_videos_replicate(
     """
     aspect = VideoAspect(video_aspect)
 
-    # Get default image URL from config or use a placeholder
-    default_image_url = config.replicate.get("default_image_url", "")
+    # Get image URL from config (if not configured, will be empty)
+    image_url = config.replicate.get("default_image_url", "")
 
-    if not default_image_url:
-        # Use a solid color image as default (1x1 transparent PNG data URI)
-        # This is a minimal placeholder - you may want to configure a proper image
-        default_image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        logger.warning("No default_image_url configured for Replicate, using placeholder")
+    if not image_url:
+        logger.info(
+            "No image URL configured for Replicate, generating video without image"
+        )
 
     # Map aspect ratio to Replicate format
     aspect_ratio_map = {
@@ -182,16 +181,19 @@ def generate_videos_replicate(
 
     # Generate video using Replicate
     try:
-        logger.info(f"Generating video for prompt: '{search_term}' with duration {video_duration}s")
+        logger.info(
+            f"Generating video with duration {video_duration}s, aspect ratio: {replicate_aspect_ratio}"
+        )
+        logger.debug(f"Prompt: {prompt[:100]}...")
 
-        video_url = replicate.generate_video_with_webhook(
-            prompt=search_term,
-            image_url=default_image_url,
+        video_url = replicate.generate_video_and_wait(
+            prompt=prompt,
+            image_url=image_url,
             duration=video_duration,
             resolution="720p",
             aspect_ratio=replicate_aspect_ratio,
             camera_fixed=False,
-            max_wait_time=600  # 10 minutes max
+            max_wait_time=600,  # 10 minutes max
         )
 
         if video_url:
@@ -268,34 +270,48 @@ def download_videos(
     video_contact_mode: VideoConcatMode = VideoConcatMode.random,
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
+    video_prompts: List[str] = None,
 ) -> List[str]:
     valid_video_items = []
     valid_video_urls = []
     found_duration = 0.0
 
+    if video_prompts is None:
+        video_prompts = []
+
     # Select appropriate search/generation function based on source
     if source == "replicate":
-        # For Replicate, we generate videos instead of searching
+        # For Replicate, we generate one video per optimized prompt
         # Duration must be 5 or 10 seconds
         video_duration = 10 if max_clip_duration > 5 else 5
 
-        for search_term in search_terms:
+        logger.info(
+            f"Generating {len(video_prompts)} videos from prompts "
+            f"(aspect ratio: {video_aspect.value}, duration: {video_duration}s)"
+        )
+
+        for prompt_idx, prompt in enumerate(video_prompts, 1):
+            logger.info(f"Generating video {prompt_idx}/{len(video_prompts)}")
             video_items = generate_videos_replicate(
-                search_term=search_term,
+                prompt=prompt,
                 video_duration=video_duration,
                 video_aspect=video_aspect,
             )
-            logger.info(f"generated {len(video_items)} videos for '{search_term}'")
 
             for item in video_items:
                 if item.url not in valid_video_urls:
                     valid_video_items.append(item)
                     valid_video_urls.append(item.url)
                     found_duration += item.duration
+                    logger.info(
+                        f"Generated {prompt_idx}/{len(video_prompts)}: {item.url}"
+                    )
 
             # For Replicate, check if we have enough duration and stop generating more
             if found_duration >= audio_duration:
-                logger.info(f"Generated sufficient video duration ({found_duration}s >= {audio_duration}s), stopping generation")
+                logger.info(
+                    f"Generated sufficient video duration ({found_duration}s >= {audio_duration}s), stopping generation"
+                )
                 break
     else:
         # Original logic for Pexels/Pixabay
@@ -320,6 +336,13 @@ def download_videos(
     logger.info(
         f"found total videos: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"
     )
+
+    # Warn if generated video duration is significantly less than audio duration
+    if source == "replicate" and found_duration < audio_duration * 0.9:
+        logger.warning(
+            f"⚠️  Generated video duration ({found_duration}s) is less than 90% of audio duration ({audio_duration}s). "
+            f"Consider generating more videos or adjusting settings."
+        )
     video_paths = []
 
     material_directory = config.app.get("material_directory", "").strip()

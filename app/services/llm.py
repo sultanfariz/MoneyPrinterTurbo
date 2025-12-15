@@ -1,10 +1,10 @@
 import json
 import logging
 import re
-import requests
 from typing import List
 
 import g4f
+import requests
 from loguru import logger
 from openai import AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
@@ -12,6 +12,185 @@ from openai.types.chat import ChatCompletion
 from app.config import config
 
 _max_retries = 5
+
+
+def calculate_video_count(video_script: str) -> int:
+    """
+    Calculate the number of videos needed based on script word count and narration rate.
+
+    Uses a simple, deterministic formula:
+    - Narration time (seconds) = (word_count / narration_rate) × 60
+    - Video count = ceil(narration_time / 5) × buffer_factor
+
+    Args:
+        video_script: The full video script text
+
+    Returns:
+        The recommended number of videos (minimum 1)
+    """
+    # Configuration constants
+    NARRATION_RATE_WPM = 140  # Words per minute - typical speaking pace for narration
+    VIDEO_DURATION_SECONDS = 5  # Each video segment is 5 seconds
+    BUFFER_FACTOR = 1.3  # 30% buffer to ensure sufficient video coverage
+
+    try:
+        # Step 1: Count words in script
+        word_count = len(video_script.split())
+
+        # Step 2: Calculate narration duration using simple formula
+        # Narration time (seconds) = (W / R) × 60
+        narration_time_seconds = (word_count / NARRATION_RATE_WPM) * 60
+
+        # Step 3: Calculate base video count needed
+        # Each 5-second video covers one segment
+        base_video_count = int(
+            (narration_time_seconds + VIDEO_DURATION_SECONDS - 1)
+            / VIDEO_DURATION_SECONDS
+        )  # Ceiling division
+
+        # Step 4: Apply buffer factor for safety
+        buffered_video_count = max(1, int((base_video_count * BUFFER_FACTOR) + 0.5))
+
+        logger.success(
+            f"Video count calculation: {word_count} words @ {NARRATION_RATE_WPM} WPM = {narration_time_seconds:.1f}s narration "
+            f"→ {base_video_count} base videos → {buffered_video_count} buffered videos (×{BUFFER_FACTOR})"
+        )
+
+        return buffered_video_count
+
+    except Exception as e:
+        logger.error(f"Error calculating video count: {e}")
+        logger.warning("Using default value of 3 videos (minimum for safety)")
+        return 3
+
+
+def generate_multiple_video_prompts(
+    video_subject: str, video_script: str, video_count: int
+) -> List[str]:
+    """
+    Generate multiple optimized video prompts by breaking down the script.
+
+    This function creates multiple cinematic prompts (one per video) by analyzing
+    the script and generating focused prompts for each segment.
+
+    Args:
+        video_subject: The main subject/topic of the video
+        video_script: The full script/narration of the video
+        video_count: The number of videos/prompts to generate
+
+    Returns:
+        A list of optimized prompt strings for video generation
+
+    Raises:
+        Exception: If the LLM fails to generate valid prompts
+    """
+    prompt = f"""# Role: Professional Video Generation Prompt Creator for Multi-Scene Videos
+
+## Goals:
+Generate {video_count} distinct, cinematic video prompts by breaking down a script into {video_count} focused segments. Each prompt should represent a coherent visual scene that matches the script pacing.
+
+## Constraints:
+1. Return ONLY a JSON array of {video_count} strings.
+2. Each string is a complete, detailed video generation prompt (150-200 words each).
+3. Do NOT include the JSON array brackets or quotes - format as plain text list separated by newlines and "---" delimiter.
+4. Each prompt must:
+   - Focus on visual and cinematic elements, not narrative or dialogue
+   - Include specific guidance on camera movements, lighting, composition
+   - Be distinct and unique from other prompts
+   - Represent a coherent 3-5 second visual sequence
+   - Flow logically with adjacent prompts
+5. Avoid mentioning "video", "camera", or technical terms.
+6. Use vivid, descriptive language that evokes emotion and visual clarity.
+7. Incorporate cinematography best practices.
+8. Do NOT include meta-commentary or instructions about duration.
+
+## Context:
+
+### Main Subject:
+{video_subject}
+
+### Full Script:
+{video_script}
+
+### Required Output:
+Generate exactly {video_count} video prompts. Format each prompt separated by "---" on a new line.
+
+## Instructions:
+Analyze the script and break it down into {video_count} natural segments. For each segment, create a comprehensive video generation prompt that visually represents that part of the script. Ensure the prompts flow together as a cohesive narrative when executed sequentially.
+
+Generate the {video_count} prompts now:
+""".strip()
+
+    logger.info(f"Generating {video_count} optimized video prompts")
+
+    final_prompts = []
+
+    def format_prompts(response):
+        """Parse and clean the generated prompts"""
+        if not response:
+            return []
+
+        # Split by delimiter
+        prompts_raw = response.split("---")
+
+        cleaned_prompts = []
+        for prompt_text in prompts_raw:
+            # Clean each prompt
+            prompt_text = prompt_text.strip()
+
+            # Remove markdown artifacts
+            prompt_text = prompt_text.replace("*", "").replace("#", "").replace("`", "")
+            prompt_text = re.sub(r"\[.*?\]", "", prompt_text)
+            prompt_text = re.sub(r"\(.*?\)", "", prompt_text)
+
+            # Remove excessive whitespace
+            prompt_text = re.sub(r"\s+", " ", prompt_text)
+
+            # Remove quotes if they wrap the entire response
+            prompt_text = prompt_text.strip("\"'")
+
+            # Remove numbering like "1.", "2.", etc. from the start
+            prompt_text = re.sub(r"^\d+\.\s*", "", prompt_text)
+
+            if prompt_text and len(prompt_text) > 80:  # Ensure reasonable length
+                cleaned_prompts.append(prompt_text)
+
+        return cleaned_prompts
+
+    for attempt in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response and "Error: " not in response:
+                parsed_prompts = format_prompts(response)
+
+                if (
+                    parsed_prompts and len(parsed_prompts) >= video_count * 0.8
+                ):  # At least 80% of requested
+                    final_prompts = parsed_prompts[:video_count]  # Trim to exact count
+                    logger.success(f"Generated {len(final_prompts)} video prompts")
+                    return final_prompts
+        except Exception as e:
+            logger.error(f"Failed to generate video prompts: {e}")
+
+        if attempt < _max_retries - 1:
+            logger.warning(
+                f"Retrying prompt generation... {attempt + 1}/{_max_retries}"
+            )
+
+    # Fallback: if we couldn't generate enough prompts, use the script as single fallback
+    if not final_prompts:
+        logger.warning(
+            f"Failed to generate {video_count} prompts, generating single fallback prompt"
+        )
+        fallback_prompt = generate_video_prompt(
+            video_subject=video_subject,
+            video_script=video_script,
+            search_term=video_subject,
+        )
+        if fallback_prompt and "Error: " not in fallback_prompt:
+            return [fallback_prompt]
+
+    return final_prompts
 
 
 def _generate_response(prompt: str) -> str:
@@ -94,44 +273,47 @@ def _generate_response(prompt: str) -> str:
                     base_url = config.app.get("pollinations_base_url", "")
                     if not base_url:
                         base_url = "https://text.pollinations.ai/openai"
-                    model_name = config.app.get("pollinations_model_name", "openai-fast")
-                   
+                    model_name = config.app.get(
+                        "pollinations_model_name", "openai-fast"
+                    )
+
                     # Prepare the payload
                     payload = {
                         "model": model_name,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ],
-                        "seed": 101  # Optional but helps with reproducibility
+                        "messages": [{"role": "user", "content": prompt}],
+                        "seed": 101,  # Optional but helps with reproducibility
                     }
-                    
+
                     # Optional parameters if configured
                     if config.app.get("pollinations_private"):
                         payload["private"] = True
                     if config.app.get("pollinations_referrer"):
                         payload["referrer"] = config.app.get("pollinations_referrer")
-                    
-                    headers = {
-                        "Content-Type": "application/json"
-                    }
-                    
+
+                    headers = {"Content-Type": "application/json"}
+
                     # Make the API request
                     response = requests.post(base_url, headers=headers, json=payload)
                     response.raise_for_status()
                     result = response.json()
-                    
+
                     if result and "choices" in result and len(result["choices"]) > 0:
                         content = result["choices"][0]["message"]["content"]
                         return content.replace("\n", "")
                     else:
-                        raise Exception(f"[{llm_provider}] returned an invalid response format")
-                        
+                        raise Exception(
+                            f"[{llm_provider}] returned an invalid response format"
+                        )
+
                 except requests.exceptions.RequestException as e:
                     raise Exception(f"[{llm_provider}] request failed: {str(e)}")
                 except Exception as e:
                     raise Exception(f"[{llm_provider}] error: {str(e)}")
 
-            if llm_provider not in ["pollinations", "ollama"]:  # Skip validation for providers that don't require API key
+            if llm_provider not in [
+                "pollinations",
+                "ollama",
+            ]:  # Skip validation for providers that don't require API key
                 if not api_key:
                     raise ValueError(
                         f"{llm_provider}: api_key is not set, please set it in the config.toml file."
@@ -176,7 +358,11 @@ def _generate_response(prompt: str) -> str:
                 if not base_url:
                     genai.configure(api_key=api_key, transport="rest")
                 else:
-                    genai.configure(api_key=api_key, transport="rest", client_options={'api_endpoint': base_url})
+                    genai.configure(
+                        api_key=api_key,
+                        transport="rest",
+                        client_options={"api_endpoint": base_url},
+                    )
 
                 generation_config = {
                     "temperature": 0.5,
@@ -239,12 +425,12 @@ def _generate_response(prompt: str) -> str:
 
             if llm_provider == "ernie":
                 response = requests.post(
-                    "https://aip.baidubce.com/oauth/2.0/token", 
+                    "https://aip.baidubce.com/oauth/2.0/token",
                     params={
                         "grant_type": "client_credentials",
                         "client_id": api_key,
                         "client_secret": secret_key,
-                    }
+                    },
                 )
                 access_token = response.json().get("access_token")
                 url = f"{base_url}?access_token={access_token}"
@@ -275,7 +461,7 @@ def _generate_response(prompt: str) -> str:
                 )
 
             if llm_provider == "modelscope":
-                content = ''
+                content = ""
                 client = OpenAI(
                     api_key=api_key,
                     base_url=base_url,
@@ -284,7 +470,7 @@ def _generate_response(prompt: str) -> str:
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
                     extra_body={"enable_thinking": False},
-                    stream=True
+                    stream=True,
                 )
                 if response:
                     for chunk in response:
@@ -293,10 +479,10 @@ def _generate_response(prompt: str) -> str:
                         delta = chunk.choices[0].delta
                         if delta and delta.content:
                             content += delta.content
-                    
+
                     if not content.strip():
                         raise ValueError("Empty content in stream response")
-                    
+
                     return content.replace("\n", "")
                 else:
                     raise Exception(f"[{llm_provider}] returned an empty response")
@@ -466,6 +652,122 @@ Please note that you must use English for generating video search terms; Chinese
     return search_terms
 
 
+def generate_video_prompt(
+    video_subject: str, video_script: str, search_term: str
+) -> str:
+    """
+    Generate an optimized video prompt for Replicate's video generation model.
+
+    This function creates a detailed, cinematic prompt specifically designed for
+    the bytedance/seedance-1-pro model on Replicate, incorporating the video subject,
+    script context, and search terms to produce high-quality video generation results.
+
+    Args:
+        video_subject: The main subject/topic of the video
+        video_script: The full script/narration of the video
+        search_term: A search term/keyword related to the video content
+
+    Returns:
+        An optimized prompt string for video generation
+
+    Raises:
+        Exception: If the LLM fails to generate a valid prompt
+    """
+    prompt = f"""# Role: Professional Video Generation Prompt Creator
+
+## Goals:
+Generate a highly detailed, cinematic video prompt for AI video generation that captures the essence of the provided content. The prompt should be optimized for professional video generation models and include rich visual descriptions, cinematography guidance, and atmospheric elements.
+
+## Constraints:
+1. The prompt must be returned as a single, cohesive string without markdown or special formatting.
+2. Maximum 200-250 words, but be as descriptive as possible within this limit.
+3. Focus on visual and cinematic elements, not narrative or dialogue.
+4. Include specific guidance on:
+   - Camera movements and angles
+   - Lighting and atmosphere
+   - Color palette and mood
+   - Pacing and transitions
+   - Visual composition and framing
+5. Avoid mentioning "video", "camera", or technical terms that might confuse the model.
+6. Use vivid, descriptive language that evokes emotion and visual clarity.
+7. Be specific about the environment, objects, and actions rather than abstract concepts.
+8. Incorporate cinematography best practices (rule of thirds, depth of field, motion etc).
+9. Do NOT include instructions about duration, aspect ratio, or technical parameters.
+10. Do NOT include dialogue or narrator instructions.
+11. Do NOT mention that this is for AI generation or include meta-commentary.
+12. Return ONLY the prompt text, nothing else.
+
+## Context Information:
+
+### Main Subject:
+{video_subject}
+
+### Video Script/Narration:
+{video_script}
+
+### Primary Keyword:
+{search_term}
+
+## Output Requirements:
+- Create a vivid, cinematic prompt that visually represents the script content
+- The prompt should inspire rich, high-quality visuals when used with a video generation model
+- Use sensory and visual language that creates a clear mental image
+- Include specific visual scenarios, environments, and compositions
+- Ensure the prompt feels professional and cinematically coherent
+
+## Instructions:
+Based on the subject, script, and keyword provided above, generate a comprehensive video generation prompt that translates the narrative content into visual instructions. The prompt should guide the video model to create compelling, high-quality visuals that match the tone and content of the script.
+""".strip()
+
+    logger.info(f"Generating optimized video prompt for: {video_subject}")
+    logger.info(f"Search term: {search_term}")
+
+    final_prompt = ""
+
+    def format_prompt(response):
+        """Clean and format the generated prompt"""
+        # Remove markdown artifacts
+        response = response.replace("*", "").replace("#", "").replace("`", "")
+
+        # Remove common markdown patterns
+        response = re.sub(r"\[.*?\]", "", response)
+        response = re.sub(r"\(.*?\)", "", response)
+
+        # Clean up excessive whitespace
+        response = re.sub(r"\s+", " ", response)
+
+        # Remove quotes if they wrap the entire response
+        response = response.strip("\"'")
+
+        return response.strip()
+
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                final_prompt = format_prompt(response)
+            else:
+                logger.error("LLM returned an empty response for video prompt")
+
+            if final_prompt and "Error: " not in final_prompt:
+                if len(final_prompt) > 100:  # Ensure reasonable length
+                    break
+        except Exception as e:
+            logger.error(f"Failed to generate video prompt: {e}")
+
+        if i < _max_retries - 1:
+            logger.warning(
+                f"Failed to generate video prompt, retrying... {i + 1}/{_max_retries}"
+            )
+
+    if "Error: " in final_prompt:
+        logger.error(f"Failed to generate video prompt: {final_prompt}")
+    else:
+        logger.success(f"Video prompt generated successfully:\n{final_prompt}")
+
+    return final_prompt.strip()
+
+
 if __name__ == "__main__":
     video_subject = "生命的意义是什么"
     script = generate_script(
@@ -478,4 +780,3 @@ if __name__ == "__main__":
     )
     print("######################")
     print(search_terms)
-    

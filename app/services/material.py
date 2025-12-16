@@ -163,7 +163,7 @@ def generate_videos_replicate(
     """
     aspect = VideoAspect(video_aspect)
 
-    # Get image URL from config (if not configured, will be empty)
+    # Get image URL from config or use base64 placeholder
     image_url = config.replicate.get("default_image_url", "")
 
     if not image_url:

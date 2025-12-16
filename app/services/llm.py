@@ -160,8 +160,13 @@ Generate the {video_count} prompts now:
     for attempt in range(_max_retries):
         try:
             response = _generate_response(prompt=prompt)
+            logger.debug(
+                f"LLM Response (first 500 chars): {response[:500] if response else 'Empty'}"
+            )
+
             if response and "Error: " not in response:
                 parsed_prompts = format_prompts(response)
+                logger.debug(f"Parsed {len(parsed_prompts)} prompts from response")
 
                 if (
                     parsed_prompts and len(parsed_prompts) >= video_count * 0.8
@@ -169,15 +174,88 @@ Generate the {video_count} prompts now:
                     final_prompts = parsed_prompts[:video_count]  # Trim to exact count
                     logger.success(f"Generated {len(final_prompts)} video prompts")
                     return final_prompts
+                else:
+                    logger.debug(
+                        f"Insufficient prompts: got {len(parsed_prompts)}, needed at least {int(video_count * 0.8)}"
+                    )
         except Exception as e:
             logger.error(f"Failed to generate video prompts: {e}")
+            import traceback
+
+            logger.debug(f"Error traceback: {traceback.format_exc()}")
 
         if attempt < _max_retries - 1:
             logger.warning(
                 f"Retrying prompt generation... {attempt + 1}/{_max_retries}"
             )
 
-    # Fallback: if we couldn't generate enough prompts, use the script as single fallback
+    # Fallback: if we couldn't generate all prompts at once, try generating them sequentially
+    if not final_prompts or len(final_prompts) < video_count:
+        logger.warning(
+            f"Fallback: generating prompts sequentially (need {video_count}, have {len(final_prompts)})"
+        )
+
+        # Generate individual prompts for each segment
+        sequential_prompts = final_prompts.copy() if final_prompts else []
+
+        for segment_num in range(len(sequential_prompts), video_count):
+            try:
+                segment_prompt = f"""Generate ONE cinematic video prompt for segment {segment_num + 1} of {video_count}.
+
+Subject: {video_subject}
+
+Script segment {segment_num + 1} of {video_count}:
+{video_script}
+
+Requirements:
+- Return ONLY a single detailed prompt (150-200 words)
+- Focus on visual and cinematic elements
+- Include camera movements, lighting, composition guidance
+- Represent a coherent 3-5 second visual sequence
+- No dialogue, no technical terms, no meta-commentary
+- Use vivid, descriptive language
+
+Generate the prompt now:"""
+
+                segment_response = _generate_response(prompt=segment_prompt)
+                logger.debug(
+                    f"Segment {segment_num + 1} response (first 200 chars): {segment_response[:200] if segment_response else 'Empty'}"
+                )
+
+                if segment_response and "Error: " not in segment_response:
+                    # Clean the response
+                    cleaned = segment_response.strip()
+                    cleaned = cleaned.replace("*", "").replace("#", "").replace("`", "")
+                    cleaned = re.sub(r"\[.*?\]", "", cleaned)
+                    cleaned = re.sub(r"\(.*?\)", "", cleaned)
+                    cleaned = re.sub(r"\s+", " ", cleaned)
+                    cleaned = cleaned.strip("\"'")
+                    cleaned = re.sub(r"^\d+\.\s*", "", cleaned)
+
+                    if cleaned and len(cleaned) > 80:
+                        sequential_prompts.append(cleaned)
+                        logger.success(
+                            f"Generated prompt {len(sequential_prompts)}/{video_count}"
+                        )
+
+                        # Stop if we have enough
+                        if len(sequential_prompts) >= video_count:
+                            logger.success(
+                                f"Generated all {video_count} prompts sequentially"
+                            )
+                            return sequential_prompts[:video_count]
+
+            except Exception as e:
+                logger.warning(f"Failed to generate segment {segment_num + 1}: {e}")
+                continue
+
+        if sequential_prompts:
+            logger.warning(
+                f"Generated {len(sequential_prompts)} prompts sequentially (needed {video_count})"
+            )
+            return sequential_prompts[:video_count]
+
+    # Last resort fallback: use the original prompt generation function
     if not final_prompts:
         logger.warning(
             f"Failed to generate {video_count} prompts, generating single fallback prompt"

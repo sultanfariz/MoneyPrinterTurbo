@@ -28,7 +28,7 @@ def generate_video(
         image_url: URL of the input image
         duration: Video duration in seconds (default: 10)
         resolution: Video resolution (default: "720p")
-        aspect_ratio: Video aspect ratio (default: "9:16")
+        aspect_ratio: Video aspect ratio (default: "9:16" for TikTok/Reels portrait)
         camera_fixed: Whether camera should be fixed (default: False)
         webhook_url: Optional webhook URL for completion notification
 
@@ -39,6 +39,11 @@ def generate_video(
         ValueError: If API key is not configured
         requests.exceptions.RequestException: If API request fails
     """
+    # Ensure aspect_ratio defaults to 9:16 (TikTok/Reels portrait format)
+    if not aspect_ratio:
+        aspect_ratio = "9:16"
+        logger.warning("No aspect_ratio provided, defaulting to 9:16 (portrait)")
+
     # Get API key from config
     api_key = config.replicate.get("api_key", "")
     if not api_key:
@@ -77,7 +82,13 @@ def generate_video(
         payload["webhook"] = webhook_url
         payload["webhook_events_filter"] = ["completed"]
 
-    logger.info(f"Sending video generation request to Replicate API for model: {model}")
+    logger.info(
+        f"Sending video generation request to Replicate API\n"
+        f"  Model: {model}\n"
+        f"  Duration: {duration}s\n"
+        f"  Aspect Ratio: {aspect_ratio}\n"
+        f"  Resolution: {resolution}"
+    )
     logger.debug(f"Request payload: {json.dumps(payload, indent=2)}")
 
     try:

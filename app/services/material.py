@@ -156,12 +156,20 @@ def generate_videos_replicate(
     Args:
         prompt: Cinematic prompt for video generation (from LLM)
         video_duration: Duration of the video (5 or 10 seconds)
-        video_aspect: Aspect ratio for the video
+        video_aspect: Aspect ratio for the video (default: portrait 9:16)
 
     Returns:
         List of MaterialInfo with generated video URLs
     """
-    aspect = VideoAspect(video_aspect)
+    # Ensure we have a VideoAspect enum (handle both string and enum inputs)
+    if isinstance(video_aspect, str):
+        try:
+            aspect = VideoAspect(video_aspect)
+        except ValueError:
+            logger.warning(f"Invalid aspect ratio string: {video_aspect}, using default 9:16")
+            aspect = VideoAspect.portrait
+    else:
+        aspect = video_aspect if isinstance(video_aspect, VideoAspect) else VideoAspect.portrait
 
     # Get image URL from config or use base64 placeholder
     image_url = config.replicate.get("default_image_url", "")
@@ -171,13 +179,14 @@ def generate_videos_replicate(
             "No image URL configured for Replicate, generating video without image"
         )
 
-    # Map aspect ratio to Replicate format
+    # Map aspect ratio to Replicate format (default to 9:16 portrait)
     aspect_ratio_map = {
         VideoAspect.portrait: "9:16",
         VideoAspect.landscape: "16:9",
         VideoAspect.square: "1:1",
     }
     replicate_aspect_ratio = aspect_ratio_map.get(aspect, "9:16")
+    logger.debug(f"Aspect ratio mapping: {aspect.value} → {replicate_aspect_ratio}")
 
     # Generate video using Replicate
     try:

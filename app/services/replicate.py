@@ -1,10 +1,12 @@
 """
 Replicate API integration for video generation
 """
+
 import json
 import uuid
+from typing import Any, Dict, Optional
+
 import requests
-from typing import Optional, Dict, Any
 from loguru import logger
 
 from app.config import config
@@ -13,19 +15,17 @@ from app.services.webhook_manager import webhook_result_manager
 
 def generate_video(
     prompt: str,
-    image_url: str,
     duration: int = 10,
     resolution: str = "720p",
     aspect_ratio: str = "9:16",
     camera_fixed: bool = False,
-    webhook_url: Optional[str] = None
+    webhook_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate video using Replicate's bytedance/seedance-1-pro model
 
     Args:
         prompt: Text prompt for video generation
-        image_url: URL of the input image
         duration: Video duration in seconds (default: 10)
         resolution: Video resolution (default: "720p")
         aspect_ratio: Video aspect ratio (default: "9:16" for TikTok/Reels portrait)
@@ -47,7 +47,9 @@ def generate_video(
     # Get API key from config
     api_key = config.replicate.get("api_key", "")
     if not api_key:
-        raise ValueError("Replicate API key not configured. Please set replicate.api_key in config.toml")
+        raise ValueError(
+            "Replicate API key not configured. Please set replicate.api_key in config.toml"
+        )
 
     # Get model from config or use default
     model = config.replicate.get("model", "bytedance/seedance-1-pro")
@@ -56,10 +58,7 @@ def generate_video(
     api_url = f"https://api.replicate.com/v1/models/{model}/predictions"
 
     # Prepare headers
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     # Add Prefer: wait header if no webhook is provided
     if not webhook_url:
@@ -69,11 +68,10 @@ def generate_video(
     payload = {
         "input": {
             "prompt": prompt,
-            "image": image_url,
             "duration": duration,
             "resolution": resolution,
             "aspect_ratio": aspect_ratio,
-            "camera_fixed": camera_fixed
+            "camera_fixed": camera_fixed,
         }
     }
 
@@ -97,14 +95,16 @@ def generate_video(
             api_url,
             headers=headers,
             json=payload,
-            timeout=300  # 5 minute timeout for synchronous requests
+            timeout=300,  # 5 minute timeout for synchronous requests
         )
 
         # Raise exception for error status codes
         response.raise_for_status()
 
         result = response.json()
-        logger.info(f"Replicate API request successful. Prediction ID: {result.get('id', 'N/A')}")
+        logger.info(
+            f"Replicate API request successful. Prediction ID: {result.get('id', 'N/A')}"
+        )
         logger.debug(f"Response: {json.dumps(result, indent=2)}")
 
         return result
@@ -114,7 +114,7 @@ def generate_video(
         raise
     except requests.exceptions.RequestException as e:
         logger.error(f"Replicate API request failed: {str(e)}")
-        if hasattr(e.response, 'text'):
+        if hasattr(e.response, "text"):
             logger.error(f"Response body: {e.response.text}")
         raise
 
@@ -136,16 +136,15 @@ def get_prediction_status(prediction_id: str) -> Dict[str, Any]:
     # Get API key from config
     api_key = config.replicate.get("api_key", "")
     if not api_key:
-        raise ValueError("Replicate API key not configured. Please set replicate.api_key in config.toml")
+        raise ValueError(
+            "Replicate API key not configured. Please set replicate.api_key in config.toml"
+        )
 
     # Construct API URL
     api_url = f"https://api.replicate.com/v1/predictions/{prediction_id}"
 
     # Prepare headers
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     logger.info(f"Checking prediction status for ID: {prediction_id}")
 
@@ -163,7 +162,7 @@ def get_prediction_status(prediction_id: str) -> Dict[str, Any]:
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to get prediction status: {str(e)}")
-        if hasattr(e.response, 'text'):
+        if hasattr(e.response, "text"):
             logger.error(f"Response body: {e.response.text}")
         raise
 
@@ -185,16 +184,15 @@ def cancel_prediction(prediction_id: str) -> Dict[str, Any]:
     # Get API key from config
     api_key = config.replicate.get("api_key", "")
     if not api_key:
-        raise ValueError("Replicate API key not configured. Please set replicate.api_key in config.toml")
+        raise ValueError(
+            "Replicate API key not configured. Please set replicate.api_key in config.toml"
+        )
 
     # Construct API URL
     api_url = f"https://api.replicate.com/v1/predictions/{prediction_id}/cancel"
 
     # Prepare headers
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     logger.info(f"Cancelling prediction ID: {prediction_id}")
 
@@ -212,26 +210,24 @@ def cancel_prediction(prediction_id: str) -> Dict[str, Any]:
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to cancel prediction: {str(e)}")
-        if hasattr(e.response, 'text'):
+        if hasattr(e.response, "text"):
             logger.error(f"Response body: {e.response.text}")
         raise
 
 
 def generate_video_with_webhook(
     prompt: str,
-    image_url: str,
     duration: int = 10,
     resolution: str = "720p",
     aspect_ratio: str = "9:16",
     camera_fixed: bool = False,
-    max_wait_time: int = 600
+    max_wait_time: int = 600,
 ) -> Optional[str]:
     """
     Generate video using webhook and wait for completion
 
     Args:
         prompt: Text prompt for video generation
-        image_url: URL of the input image
         duration: Video duration in seconds (default: 10)
         resolution: Video resolution (default: "720p")
         aspect_ratio: Video aspect ratio (default: "9:16")
@@ -253,13 +249,22 @@ def generate_video_with_webhook(
             "This is required for video generation as Replicate only returns results via webhooks."
         )
 
-    # Generate unique callback ID for this request
-    callback_id = str(uuid.uuid4())
+    # Start video generation (without webhook for synchronous flow)
+    result = generate_video(
+        prompt=prompt,
+        duration=duration,
+        resolution=resolution,
+        aspect_ratio=aspect_ratio,
+        camera_fixed=camera_fixed,
+        webhook_url=None,  # No webhook for synchronous generation
+    )
 
     # Construct webhook URL with callback ID
     webhook_url = f"{webhook_base_url}/api/v1/replicate/webhook/{callback_id}"
 
-    logger.info(f"Generating video with prompt: '{prompt}' (callback_id: {callback_id})")
+    logger.info(
+        f"Generating video with prompt: '{prompt}' (callback_id: {callback_id})"
+    )
     logger.debug(f"Webhook URL: {webhook_url}")
 
     # Start video generation with webhook
@@ -271,17 +276,17 @@ def generate_video_with_webhook(
             resolution=resolution,
             aspect_ratio=aspect_ratio,
             camera_fixed=camera_fixed,
-            webhook_url=webhook_url
+            webhook_url=webhook_url,
         )
 
         prediction_id = result.get("id")
-        logger.info(f"Video generation started - Prediction ID: {prediction_id}, Callback ID: {callback_id}")
+        logger.info(
+            f"Video generation started - Prediction ID: {prediction_id}, Callback ID: {callback_id}"
+        )
 
         # Wait for webhook callback
         webhook_result = webhook_result_manager.wait_for_result(
-            callback_id=callback_id,
-            timeout=max_wait_time,
-            poll_interval=2
+            callback_id=callback_id, timeout=max_wait_time, poll_interval=2
         )
 
         # Clean up result from storage

@@ -37,6 +37,7 @@ def save_config():
         _cfg["app"] = app
         _cfg["azure"] = azure
         _cfg["siliconflow"] = siliconflow
+        _cfg["replicate"] = replicate
         _cfg["ui"] = ui
         f.write(toml.dumps(_cfg))
 
@@ -47,6 +48,16 @@ whisper = _cfg.get("whisper", {})
 proxy = _cfg.get("proxy", {})
 azure = _cfg.get("azure", {})
 siliconflow = _cfg.get("siliconflow", {})
+replicate = _cfg.get("replicate", {})
+
+# Override replicate config with environment variables if set
+if os.getenv("REPLICATE_API_KEY"):
+    replicate["api_key"] = os.getenv("REPLICATE_API_KEY")
+if os.getenv("REPLICATE_WEBHOOK_BASE_URL"):
+    replicate["webhook_base_url"] = os.getenv("REPLICATE_WEBHOOK_BASE_URL")
+if os.getenv("REPLICATE_WEBHOOK_SECRET"):
+    replicate["webhook_secret"] = os.getenv("REPLICATE_WEBHOOK_SECRET")
+
 ui = _cfg.get(
     "ui",
     {

@@ -478,6 +478,13 @@ if not config.app.get("hide_config", False):
             )
             save_keys_to_config("pixabay_api_keys", pixabay_api_key)
 
+            replicate_api_key = config.replicate.get("api_key", "")
+            replicate_api_key = st.text_input(
+                tr("Replicate API Key"), value=replicate_api_key, type="password"
+            )
+            if replicate_api_key:
+                config.replicate["api_key"] = replicate_api_key
+
 llm_provider = config.app.get("llm_provider", "").lower()
 panel = st.columns(3)
 left_panel = panel[0]
@@ -558,6 +565,7 @@ with middle_panel:
         video_sources = [
             (tr("Pexels"), "pexels"),
             (tr("Pixabay"), "pixabay"),
+            (tr("Replicate"), "replicate"),
             (tr("Local file"), "local"),
             (tr("TikTok"), "douyin"),
             (tr("Bilibili"), "bilibili"),
@@ -619,8 +627,8 @@ with middle_panel:
         )
 
         video_aspect_ratios = [
-            (tr("Portrait"), VideoAspect.portrait.value),
-            (tr("Landscape"), VideoAspect.landscape.value),
+            (tr("Portrait (9:16 - TikTok/Reels)"), VideoAspect.portrait.value),
+            (tr("Landscape (16:9)"), VideoAspect.landscape.value),
         ]
         selected_index = st.selectbox(
             tr("Video Ratio"),
@@ -630,6 +638,7 @@ with middle_panel:
             format_func=lambda x: video_aspect_ratios[x][
                 0
             ],  # The label is displayed to the user
+            index=0,  # Default to Portrait 9:16
         )
         params.video_aspect = VideoAspect(video_aspect_ratios[selected_index][1])
 
@@ -998,7 +1007,7 @@ if start_button:
         scroll_to_bottom()
         st.stop()
 
-    if params.video_source not in ["pexels", "pixabay", "local"]:
+    if params.video_source not in ["pexels", "pixabay", "local", "replicate"]:
         st.error(tr("Please Select a Valid Video Source"))
         scroll_to_bottom()
         st.stop()
@@ -1010,6 +1019,11 @@ if start_button:
 
     if params.video_source == "pixabay" and not config.app.get("pixabay_api_keys", ""):
         st.error(tr("Please Enter the Pixabay API Key"))
+        scroll_to_bottom()
+        st.stop()
+
+    if params.video_source == "replicate" and not config.replicate.get("api_key", ""):
+        st.error(tr("Please Enter the Replicate API Key"))
         scroll_to_bottom()
         st.stop()
 

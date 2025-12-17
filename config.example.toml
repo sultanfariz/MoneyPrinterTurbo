@@ -1,5 +1,5 @@
 [app]
-video_source = "pexels" # "pexels" or "pixabay"
+video_source = "pexels" # "pexels", "pixabay", or "replicate" for AI-generated videos
 
 # 是否隐藏配置面板
 hide_config = false
@@ -215,6 +215,25 @@ speech_region = ""
 # SiliconFlow API Key
 # Get your API key at https://siliconflow.cn
 api_key = ""
+
+[replicate]
+# Replicate API Key
+# Get your API key at https://replicate.com/account/api-tokens
+# Can also be set via REPLICATE_API_KEY environment variable
+api_key = ""
+# Default model for video generation
+model = "bytedance/seedance-1-pro"
+# Webhook base URL (if you want to receive completion notifications)
+# This should be your publicly accessible endpoint (e.g., via ngrok or production domain)
+# Example: "https://your-domain.com" or "https://xxxx.ngrok-free.app"
+# Can also be set via REPLICATE_WEBHOOK_BASE_URL environment variable
+webhook_base_url = ""
+# Webhook secret for signature verification (optional)
+# Can also be set via REPLICATE_WEBHOOK_SECRET environment variable
+webhook_secret = ""
+# Default image URL to use for video generation (when search term is used)
+# Leave empty to use a default placeholder or first frame generation
+default_image_url = ""
 
 [ui]
 # UI related settings

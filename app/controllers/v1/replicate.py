@@ -47,7 +47,6 @@ def generate_video(body: ReplicateVideoRequest):
         # Call Replicate service
         result = replicate_service.generate_video(
             prompt=body.prompt,
-            image_url=body.image_url,
             duration=body.duration,
             resolution=body.resolution,
             aspect_ratio=body.aspect_ratio,

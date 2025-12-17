@@ -197,7 +197,6 @@ def generate_videos_replicate(
 
         video_url = replicate.generate_video_and_wait(
             prompt=prompt,
-            image_url=image_url,
             duration=video_duration,
             resolution="720p",
             aspect_ratio=replicate_aspect_ratio,
